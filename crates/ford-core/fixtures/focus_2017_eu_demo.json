@@ -1,0 +1,28 @@
+{
+  "id": "focus_2017_eu_demo",
+  "name": "Focus 2017 EU (demo)",
+  "profile_hint": "focus_2017_eu",
+  "adapter": {
+    "identity": "OBDLink MX+ STN2255",
+    "is_stn": true,
+    "voltage": 12.4
+  },
+  "scripts": [
+    { "match": "1003", "response": "50 03 00 32 01 F4" },
+    { "match": "3E00", "response": "7E 00" },
+    { "match": "22F190", "response": "62 F1 90 57 46 30 44 45 4D 4F 31 32 33 34 35 36 37 38 39 30" },
+    { "match": "22F188", "response": "62 F1 88 47 31 32 33 34 35 36 37 38" },
+    { "match": "22F18C", "response": "62 F1 8C 53 4E 31 32 33 34 35" },
+    { "match": "22DE00", "response": "62 DE 00 01 02 03 04 05 06 07 08" },
+    { "match": "22DE01", "response": "62 DE 01 11 12 13 14 15 16 17 18" },
+    { "match": "22DE02", "response": "62 DE 02 21 22 23 24 25 26 27 28" },
+    { "match": "22DE03", "response": "62 DE 03 31 32 33 34 35 36 37 38" },
+    { "match": "1902FF", "response": "59 02 FF 03 01 00 AF" },
+    { "match": "14FFFFFF", "response": "54" },
+    { "match": "0100", "response": "41 00 BE 1F A8 13" },
+    { "match": "010C", "response": "41 0C 1A F8" },
+    { "match": "010D", "response": "41 0D 3C" },
+    { "match": "0105", "response": "41 05 5A" },
+    { "match": "0111", "response": "41 11 80" }
+  ]
+}

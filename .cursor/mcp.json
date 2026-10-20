@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "forddiag": {
+      "command": "npx",
+      "args": ["--yes", "tsx", "mcp/src/index.ts"],
+      "env": {
+        "FORDDIAG_URL": "http://127.0.0.1:8787"
+      }
+    }
+  }
+}
