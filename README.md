@@ -1,4 +1,6 @@
 # FordDiag
+> [!NOTE] 
+> This is a work in progress, only tested with ford models listed below. Currently is read only (no ability to send anything to the car)
 
 Open-source **Ford** OBD diagnostics for **Linux**, built with **Rust + Tauri 2**.
 
