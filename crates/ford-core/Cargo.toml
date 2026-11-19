@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 hex = { workspace = true }
 serialport = { workspace = true }
 tracing = { workspace = true }
+regex = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"

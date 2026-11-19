@@ -1,9 +1,11 @@
 //! Session worker thread: owns the serial adapter and emits Tauri events.
 
 use ford_core::{
-    correlate_press_pattern, diff_did_snapshots, AsBuiltDump, CanBus, CanFrame, ConnectionStatus,
-    DiscoveredEcu, Dtc, EcuDiscoverProgress, LiveSample, LiveSessionFile, LiveSource,
-    ModuleDtcGroup, ModuleScanResult, PatternCandidate, ScannerSession, VehicleProfile, DidValue,
+    correlate_press_pattern, correlate_press_sequence, diff_did_snapshots, is_link_lost,
+    monitor_output_ended, AsBuiltBlockWrite, AsBuiltDump, AsBuiltWriteResult, CanBus, CanFrame,
+    CaptureStage, ConnectionStatus, DiscoveredEcu, DidValue, Dtc, EcuDiscoverProgress,
+    LiveDidPin, LiveSample, LiveSessionFile, LiveSource, ModuleDtcGroup, ModuleScanResult,
+    ParamEdit, ParamValue, PatternCandidate, ScannerSession, VehicleProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,8 +30,7 @@ pub enum WorkerMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveConfig {
     pub pids: Vec<u8>,
-    /// (module_id, did, optional label)
-    pub dids: Vec<(String, u16, Option<String>)>,
+    pub dids: Vec<LiveDidPin>,
     pub interval_ms: u64,
 }
 
@@ -74,6 +75,24 @@ pub enum WorkerCmd {
         module_id: String,
         reply: Sender<Result<AsBuiltDump, String>>,
     },
+    WriteAsBuilt {
+        module_id: String,
+        blocks: Vec<AsBuiltBlockWrite>,
+        fix_checksums: bool,
+        verify: bool,
+        reply: Sender<Result<AsBuiltWriteResult, String>>,
+    },
+    DecodeAsBuiltParams {
+        module_id: String,
+        reply: Sender<Result<Vec<ParamValue>, String>>,
+    },
+    WriteAsBuiltParams {
+        module_id: String,
+        edits: Vec<ParamEdit>,
+        fix_checksums: bool,
+        verify: bool,
+        reply: Sender<Result<AsBuiltWriteResult, String>>,
+    },
     DiscoverEcus {
         bus: CanBus,
         from_id: u16,
@@ -96,6 +115,13 @@ pub enum WorkerCmd {
     },
     AnalyzePattern {
         reply: Sender<Result<Vec<PatternCandidate>, String>>,
+    },
+    AnalyzePressSequence {
+        stages: Vec<CaptureStage>,
+        reply: Sender<Result<Vec<PatternCandidate>, String>>,
+    },
+    GetProfile {
+        reply: Sender<Result<Option<VehicleProfile>, String>>,
     },
     StartDidSweep {
         module_id: String,
@@ -139,6 +165,7 @@ struct WorkerState {
     live_samples: Vec<LiveSample>,
     live_started_ms: u128,
     sniff_frames: Vec<CanFrame>,
+    sniff_bus: Option<CanBus>,
     press_marks: Vec<u64>,
     press_windows: Vec<(u64, u64)>,
     snap_before: HashMap<u16, String>,
@@ -167,6 +194,7 @@ pub fn spawn_worker(app: AppHandle) -> WorkerHandle {
                 live_samples: Vec::new(),
                 live_started_ms: 0,
                 sniff_frames: Vec::new(),
+                sniff_bus: None,
                 press_marks: Vec::new(),
                 press_windows: Vec::new(),
                 snap_before: HashMap::new(),
@@ -297,6 +325,45 @@ fn handle_cmd(state: &mut WorkerState, cmd: WorkerCmd) {
             })();
             let _ = reply.send(result);
         }
+        WorkerCmd::WriteAsBuilt {
+            module_id,
+            blocks,
+            fix_checksums,
+            verify,
+            reply,
+        } => {
+            let result = (|| {
+                ensure_idle(state)?;
+                let s = state.session.as_mut().ok_or("not connected")?;
+                s.write_as_built(&module_id, &blocks, fix_checksums, verify)
+                    .map_err(|e| e.to_string())
+            })();
+            let _ = reply.send(result);
+        }
+        WorkerCmd::DecodeAsBuiltParams { module_id, reply } => {
+            let result = (|| {
+                ensure_idle(state)?;
+                let s = state.session.as_mut().ok_or("not connected")?;
+                s.decode_as_built_params(&module_id)
+                    .map_err(|e| e.to_string())
+            })();
+            let _ = reply.send(result);
+        }
+        WorkerCmd::WriteAsBuiltParams {
+            module_id,
+            edits,
+            fix_checksums,
+            verify,
+            reply,
+        } => {
+            let result = (|| {
+                ensure_idle(state)?;
+                let s = state.session.as_mut().ok_or("not connected")?;
+                s.write_as_built_params(&module_id, &edits, fix_checksums, verify)
+                    .map_err(|e| e.to_string())
+            })();
+            let _ = reply.send(result);
+        }
         WorkerCmd::DiscoverEcus {
             bus,
             from_id,
@@ -356,6 +423,7 @@ fn handle_cmd(state: &mut WorkerState, cmd: WorkerCmd) {
                 s.start_can_sniff(bus).map_err(|e| e.to_string())?;
                 state.cancel.store(false, Ordering::Relaxed);
                 state.sniff_frames.clear();
+                state.sniff_bus = Some(bus);
                 state.press_marks.clear();
                 state.press_windows.clear();
                 state.mode = WorkerMode::CanSniff;
@@ -396,6 +464,18 @@ fn handle_cmd(state: &mut WorkerState, cmd: WorkerCmd) {
                 Ok(c)
             })();
             let _ = reply.send(result);
+        }
+        WorkerCmd::AnalyzePressSequence { stages, reply } => {
+            let result = (|| {
+                let c = correlate_press_sequence(&state.sniff_frames, &stages);
+                let _ = state.app.emit("sniff.sequence_candidates", &c);
+                Ok(c)
+            })();
+            let _ = reply.send(result);
+        }
+        WorkerCmd::GetProfile { reply } => {
+            let profile = state.session.as_ref().and_then(|s| s.profile().cloned());
+            let _ = reply.send(Ok(profile));
         }
         WorkerCmd::StartDidSweep {
             module_id,
@@ -518,18 +598,42 @@ fn tick_activity(state: &mut WorkerState) -> Result<(), String> {
         }
         WorkerMode::CanSniff => {
             let s = state.session.as_mut().ok_or("not connected")?;
-            let frames = s
-                .read_sniff_chunk(Duration::from_millis(80))
-                .map_err(|e| e.to_string())?;
-            for f in frames {
-                let _ = state.app.emit("sniff.frame", &f);
-                state.sniff_frames.push(f);
-                if state.sniff_frames.len() > 50_000 {
-                    let drain = state.sniff_frames.len() - 40_000;
-                    state.sniff_frames.drain(0..drain);
+            let result = s.read_sniff_chunk(Duration::from_millis(80));
+            
+            match result {
+                Ok(frames) => {
+                    // Check if buffer is full or monitor ended
+                    let should_restart = frames.is_empty() || frames.iter().any(|f| {
+                        monitor_output_ended(&f.raw_line)
+                    });
+                    
+                    for f in frames {
+                        let _ = state.app.emit("sniff.frame", &f);
+                        state.sniff_frames.push(f);
+                        if state.sniff_frames.len() > 50_000 {
+                            let drain = state.sniff_frames.len() - 40_000;
+                            state.sniff_frames.drain(0..drain);
+                        }
+                    }
+                    
+                    if should_restart {
+                        // Restart monitor
+                        let bus = state.sniff_bus.unwrap_or(CanBus::Hs);
+                        let _ = s.start_can_sniff(bus);
+                    }
+                    
+                    Ok(())
+                }
+                Err(e) => {
+                    if is_link_lost(&e) {
+                        let _ = state.app.emit("connection.lost", "Link lost during sniff");
+                        state.session = None;
+                        state.mode = WorkerMode::Idle;
+                        return Err("connection lost".into());
+                    }
+                    Err(e.to_string())
                 }
             }
-            Ok(())
         }
         _ => Ok(()),
     }

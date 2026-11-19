@@ -46,6 +46,63 @@ modules:
       - did: 56835
         label: As-Built block DE03
         as_built: true
+    # Experimental lighting seed — same layout as Focus for shared tooling.
+    # Validate bit positions on your car before writing (verified: false).
+    params:
+      - id: drl_enable
+        label: Daytime running lights
+        did: 56832
+        byte: 0
+        bit: 0
+        width: 1
+        kind: bool
+        verified: false
+        notes: "Experimental seed. Validate before writing."
+      - id: cornering_lamps
+        label: Cornering lamps
+        did: 56832
+        byte: 0
+        bit: 1
+        width: 1
+        kind: bool
+        verified: false
+        notes: "Experimental seed. Validate before writing."
+      - id: rear_fog
+        label: Rear fog lamp enable
+        did: 56832
+        byte: 1
+        bit: 1
+        width: 1
+        kind: bool
+        verified: false
+        notes: "Experimental seed. Validate before writing."
+      - id: approach_light_mode
+        label: Approach light mode
+        did: 56832
+        byte: 2
+        bit: 0
+        width: 2
+        kind: enum
+        options:
+          - value: 0
+            label: Off
+          - value: 1
+            label: Short
+          - value: 2
+            label: Medium
+          - value: 3
+            label: Long
+        verified: false
+        notes: "Experimental seed. Validate before writing."
+      - id: courtesy_delay
+        label: Courtesy delay (raw)
+        did: 56832
+        byte: 3
+        bit: 0
+        width: 4
+        kind: uint
+        verified: false
+        notes: "Experimental seed. Validate before writing."
 
   - id: IPC
     name: Instrument Panel Cluster

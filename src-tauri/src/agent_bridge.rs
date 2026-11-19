@@ -8,13 +8,16 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ford_core::{builtin_profile_by_id, list_builtin_fixtures, list_serial_ports, CanBus};
+use ford_core::{
+    builtin_profile_by_id, list_all_profiles, list_builtin_fixtures, list_serial_ports, CanBus,
+    LiveDidPin, UserProfileStore,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tower_http::cors::{Any, CorsLayer};
 
 pub const DEFAULT_PORT: u16 = 8787;
@@ -23,6 +26,7 @@ pub const DEFAULT_PORT: u16 = 8787;
 struct BridgeState {
     api: Arc<AppState>,
     token: String,
+    app: AppHandle,
 }
 
 #[derive(Serialize, Clone)]
@@ -51,6 +55,7 @@ fn run_bridge(app: AppHandle, worker: WorkerHandle) -> Result<(), String> {
     let state = BridgeState {
         api,
         token: token.clone(),
+        app: app.clone(),
     };
 
     let cors = CorsLayer::new()
@@ -75,6 +80,9 @@ fn run_bridge(app: AppHandle, worker: WorkerHandle) -> Result<(), String> {
         .route("/read_dtcs", post(read_dtcs))
         .route("/clear_dtcs", post(clear_dtcs))
         .route("/dump_as_built", post(dump_as_built))
+        .route("/write_as_built", post(write_as_built))
+        .route("/decode_as_built_params", post(decode_as_built_params))
+        .route("/write_as_built_params", post(write_as_built_params))
         .route("/live/start", post(live_start))
         .route("/live/stop", post(live_stop))
         .route("/live/samples", get(live_samples))
@@ -202,8 +210,14 @@ async fn ports() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     Ok(Json(serde_json::to_value(list).unwrap_or(Value::Null)))
 }
 
-async fn profiles() -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let list = ford_core::builtin_profiles().map_err(|e| api_err(e.to_string()))?;
+async fn profiles(State(s): State<BridgeState>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let profiles_dir = s
+        .app
+        .path()
+        .app_data_dir()
+        .map(|p| p.join("profiles"))
+        .ok();
+    let list = list_all_profiles(profiles_dir).map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::to_value(list).unwrap_or(Value::Null)))
 }
 
@@ -258,6 +272,21 @@ async fn select_profile(
     State(s): State<BridgeState>,
     Json(body): Json<ProfileBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let profiles_dir = s
+        .app
+        .path()
+        .app_data_dir()
+        .map(|p| p.join("profiles"));
+    if let Ok(dir) = profiles_dir {
+        if let Ok(store) = UserProfileStore::new(dir) {
+            if let Ok(user_profiles) = store.load_user_profiles() {
+                if let Some(profile) = user_profiles.into_iter().find(|p| p.id == body.profile_id) {
+                    let st = s.api.set_profile(profile).map_err(api_err)?;
+                    return Ok(Json(serde_json::to_value(st).unwrap_or(Value::Null)));
+                }
+            }
+        }
+    }
     let profile = builtin_profile_by_id(&body.profile_id).map_err(|e| api_err(e.to_string()))?;
     let st = s.api.set_profile(profile).map_err(api_err)?;
     Ok(Json(serde_json::to_value(st).unwrap_or(Value::Null)))
@@ -342,9 +371,125 @@ async fn dump_as_built(
 }
 
 #[derive(Deserialize)]
+struct WriteAsBuiltBlockBody {
+    did: u16,
+    /// Hex string (with or without spaces) or raw byte array via serde.
+    #[serde(alias = "hex")]
+    data_hex: Option<String>,
+    data: Option<Vec<u8>>,
+}
+
+#[derive(Deserialize)]
+struct WriteAsBuiltBody {
+    module_id: String,
+    blocks: Vec<WriteAsBuiltBlockBody>,
+    fix_checksums: Option<bool>,
+    verify: Option<bool>,
+    /// Must be true — writing As-Built can brick vehicle configuration.
+    confirm: Option<bool>,
+}
+
+async fn write_as_built(
+    State(s): State<BridgeState>,
+    Json(body): Json<WriteAsBuiltBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if body.confirm != Some(true) {
+        return Err(api_err(
+            "write_as_built requires confirm: true (writes ECU configuration)".into(),
+        ));
+    }
+    let mut blocks = Vec::new();
+    for b in body.blocks {
+        let data = if let Some(bytes) = b.data {
+            bytes
+        } else if let Some(hex_str) = b.data_hex {
+            let cleaned: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
+            hex::decode(&cleaned).map_err(|e| api_err(format!("invalid hex for DID {:04X}: {e}", b.did)))?
+        } else {
+            return Err(api_err(format!(
+                "DID {:04X}: provide data (bytes) or data_hex/hex",
+                b.did
+            )));
+        };
+        blocks.push(ford_core::AsBuiltBlockWrite { did: b.did, data });
+    }
+    let r = s
+        .api
+        .write_as_built(
+            &body.module_id,
+            blocks,
+            body.fix_checksums.unwrap_or(false),
+            body.verify.unwrap_or(true),
+        )
+        .map_err(api_err)?;
+    Ok(Json(serde_json::to_value(r).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize)]
+struct DecodeParamsBody {
+    module_id: String,
+}
+
+async fn decode_as_built_params(
+    State(s): State<BridgeState>,
+    Json(body): Json<DecodeParamsBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let r = s
+        .api
+        .decode_as_built_params(&body.module_id)
+        .map_err(api_err)?;
+    Ok(Json(serde_json::to_value(r).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize)]
+struct ParamEditBody {
+    id: String,
+    value: u64,
+}
+
+#[derive(Deserialize)]
+struct WriteAsBuiltParamsBody {
+    module_id: String,
+    edits: Vec<ParamEditBody>,
+    fix_checksums: Option<bool>,
+    verify: Option<bool>,
+    confirm: Option<bool>,
+}
+
+async fn write_as_built_params(
+    State(s): State<BridgeState>,
+    Json(body): Json<WriteAsBuiltParamsBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if body.confirm != Some(true) {
+        return Err(api_err(
+            "write_as_built_params requires confirm: true (writes ECU configuration)".into(),
+        ));
+    }
+    let edits = body
+        .edits
+        .into_iter()
+        .map(|e| ford_core::ParamEdit {
+            id: e.id,
+            value: e.value,
+        })
+        .collect();
+    let r = s
+        .api
+        .write_as_built_params(
+            &body.module_id,
+            edits,
+            body.fix_checksums.unwrap_or(false),
+            body.verify.unwrap_or(true),
+        )
+        .map_err(api_err)?;
+    Ok(Json(serde_json::to_value(r).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize)]
 struct LiveStartBody {
     pids: Vec<u8>,
-    dids: Vec<(String, u16, Option<String>)>,
+    #[serde(default)]
+    dids: Vec<serde_json::Value>,
     interval_ms: Option<u64>,
 }
 
@@ -352,10 +497,32 @@ async fn live_start(
     State(s): State<BridgeState>,
     Json(body): Json<LiveStartBody>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Parse LiveDidPin from JSON (supports both tuple and object forms)
+    let did_pins: Vec<LiveDidPin> = body.dids
+        .into_iter()
+        .filter_map(|v| {
+            // Try object form first
+            if let Ok(pin) = serde_json::from_value::<LiveDidPin>(v.clone()) {
+                return Some(pin);
+            }
+            // Try tuple form (module_id, did, label)
+            if let Ok((module_id, did, label)) = serde_json::from_value::<(String, u16, Option<String>)>(v) {
+                return Some(LiveDidPin {
+                    module_id,
+                    did,
+                    label,
+                    equation: None,
+                    unit: None,
+                });
+            }
+            None
+        })
+        .collect();
+    
     s.api
         .start_live(LiveConfig {
             pids: body.pids,
-            dids: body.dids,
+            dids: did_pins,
             interval_ms: body.interval_ms.unwrap_or(250),
         })
         .map_err(api_err)?;

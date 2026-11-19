@@ -18,6 +18,10 @@ pub struct LiveSample {
     pub decoded: Option<String>,
     pub module_id: Option<String>,
     pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

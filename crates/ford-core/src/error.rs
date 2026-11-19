@@ -51,6 +51,34 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// True when the failure indicates the serial/Bluetooth link is dead.
+/// Covers IO errors, timeouts, broken pipes, socket closed, connection reset.
+pub fn is_link_lost(error: &Error) -> bool {
+    match error {
+        Error::Io(e) => {
+            let kind = e.kind();
+            matches!(
+                kind,
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        }
+        Error::Timeout => true,
+        Error::NotConnected => true,
+        _ => {
+            // Check message for common link-lost patterns
+            let msg = error.to_string().to_lowercase();
+            msg.contains("broken pipe")
+                || msg.contains("socket closed")
+                || msg.contains("connection reset")
+                || msg.contains("not connected")
+        }
+    }
+}
+
 /// Map UDS negative response codes to short descriptions.
 pub fn nrc_description(nrc: u8) -> &'static str {
     match nrc {

@@ -47,3 +47,26 @@ body {
 .mono {
   font-family: "JetBrains Mono", ui-monospace, monospace;
 }
+
+/* Native <select> under webkit2gtk ignores Tailwind bg and paints white — force dark. */
+select {
+  color-scheme: dark;
+  background-color: color-mix(in srgb, var(--accent-dim) 30%, var(--bg-elevated));
+  color: var(--text);
+  border-color: var(--accent-dim);
+}
+
+select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+select:disabled {
+  border-color: var(--accent-dim);
+  opacity: 0.4;
+}
+
+select option {
+  background-color: var(--bg-elevated);
+  color: var(--text);
+}

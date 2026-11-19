@@ -51,6 +51,8 @@ Examples:
 - `forddiag_select_profile` → `forddiag_scan_modules` → `forddiag_read_all_dtcs`
 - `forddiag_start_live` / `forddiag_get_live_samples` / `forddiag_stop`
 - `forddiag_clear_dtcs` requires `confirm: true`
+- `forddiag_write_as_built` requires `confirm: true` (writes ECU As-Built config)
+- `forddiag_decode_as_built_params` / `forddiag_write_as_built_params` (named bit-field params; write needs `confirm: true`)
 
 If tools fail with connection refused, open FordDiag first, then retry.
 

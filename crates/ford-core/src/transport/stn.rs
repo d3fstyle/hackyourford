@@ -161,13 +161,12 @@ impl DiagAdapter for StnTransport {
 
         let _ = self.command("ATE0"); // echo off
         let _ = self.command("ATL0"); // no linefeeds preferred (we still handle both)
-        let _ = self.command("ATS0"); // spaces off for denser hex (we still parse spaces)
+        let _ = self.command("ATS1"); // spaces ON — denser ATS0 + ATH1 yields odd-length hex with 11-bit IDs
         let _ = self.command("ATH1"); // headers on — helps multi-module debugging
         let _ = self.command("ATAL"); // allow long messages
 
         let identity = self.command("ATI")?.trim().to_string();
-        let is_stn = identity.to_ascii_uppercase().contains("STN")
-            || identity.to_ascii_uppercase().contains("OBDLINK");
+        let is_stn = detect_stn_capability(self, &identity)?;
 
         let voltage = self
             .command("ATRV")
@@ -243,10 +242,13 @@ impl DiagAdapter for StnTransport {
         let deadline = Instant::now() + max_wait;
         let mut buf = Vec::new();
         let mut byte = [0u8; 1];
+        let mut hit_prompt = false;
+
         while Instant::now() < deadline {
             match self.port.read(&mut byte) {
                 Ok(1) => {
                     if byte[0] == b'>' {
+                        hit_prompt = true;
                         break;
                     }
                     buf.push(byte[0]);
@@ -270,7 +272,15 @@ impl DiagAdapter for StnTransport {
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok(String::from_utf8_lossy(&buf).to_string())
+
+        let text = String::from_utf8_lossy(&buf).to_string();
+        
+        // Check for BUFFER FULL / STOPPED — caller can reissue ATMA
+        if !hit_prompt && crate::sniff::monitor_output_ended(&text) {
+            // ELM stopped ATMA, no more data coming
+        }
+
+        Ok(text)
     }
 
     fn stop_monitor(&mut self) -> Result<()> {
@@ -290,6 +300,49 @@ impl DiagAdapter for StnTransport {
 
 fn strip_prompt(s: &str) -> String {
     s.trim_end_matches('>').trim().to_string()
+}
+
+/// Layered MS-CAN/STN detection (ATI → name hints → STI/STDI → STP 53 probe).
+/// OBDLink MX often answers ATI as plain "ELM327 v1.x" without OBDLINK/STN.
+/// Probe ST commands before giving up on MS-CAN.
+fn detect_stn_capability(transport: &mut StnTransport, identity: &str) -> Result<bool> {
+    let id_up = identity.to_uppercase();
+    if id_up.contains("STN") || id_up.contains("OBDLINK") {
+        return Ok(true);
+    }
+
+    // Probe STI, STDI for STN identification
+    for cmd in ["STI", "STDI"] {
+        if let Ok(resp) = transport.command(cmd) {
+            let up = resp.to_uppercase();
+            // Ignore short error responses
+            if up.contains('?') && up.len() < 8 {
+                continue;
+            }
+            if up.contains("STN")
+                || up.contains("OBDLINK")
+                || up.contains("OK")
+                || (!resp.is_empty() && !up.contains('?'))
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    // Accept STP 53 → restore HS-CAN afterward
+    if let Ok(stp) = transport.command("STP 53") {
+        let up = stp.to_uppercase();
+        if !up.contains('?') && !up.contains("ERROR") {
+            let _ = transport.command("ATSP6");
+            transport.current_bus = Some(CanBus::Hs);
+            return Ok(true);
+        }
+    }
+
+    let _ = transport.command("ATSP6");
+    transport.current_bus = Some(CanBus::Hs);
+
+    Ok(false)
 }
 
 fn parse_voltage(s: &str) -> Option<f32> {

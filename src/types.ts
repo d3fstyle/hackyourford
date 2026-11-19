@@ -31,6 +31,42 @@ export interface DidDef {
   as_built?: boolean;
 }
 
+export type ParamKind = "bool" | "uint" | "enum";
+
+export interface ParamOption {
+  value: number;
+  label: string;
+}
+
+export interface ParamDef {
+  id: string;
+  label: string;
+  did: number;
+  byte: number;
+  bit: number;
+  width: number;
+  kind: ParamKind;
+  options?: ParamOption[];
+  verified?: boolean;
+  notes?: string | null;
+}
+
+export interface ParamValue {
+  id: string;
+  label: string;
+  did: number;
+  kind: ParamKind;
+  value: number;
+  verified: boolean;
+  notes: string | null;
+  options: ParamOption[];
+}
+
+export interface ParamEdit {
+  id: string;
+  value: number;
+}
+
 export interface ModuleDef {
   id: string;
   name: string;
@@ -38,6 +74,7 @@ export interface ModuleDef {
   rx_id?: number | null;
   bus: "hs" | "ms";
   dids: DidDef[];
+  params?: ParamDef[];
 }
 
 export interface VehicleProfile {
@@ -92,6 +129,19 @@ export interface AsBuiltDump {
   exported_at_unix_ms: number;
 }
 
+export interface AsBuiltBlockWrite {
+  did: number;
+  data: number[];
+}
+
+export interface AsBuiltWriteResult {
+  module_id: string;
+  profile_id: string;
+  written_dids: number[];
+  verified: DidValue[] | null;
+  checksum_fixed: boolean;
+}
+
 export interface DiscoveredEcu {
   tx_id: number;
   rx_id: number;
@@ -121,6 +171,8 @@ export interface LiveSample {
   decoded: string | null;
   module_id: string | null;
   label: string | null;
+  value?: number;
+  unit?: string;
 }
 
 export interface CanFrame {
@@ -138,20 +190,66 @@ export interface PatternCandidate {
   sample_values: string[];
 }
 
-export type AppTab = "home" | "ecus" | "dtcs" | "live" | "discover";
+export type AppTab = "home" | "profiles" | "ecus" | "dtcs" | "live" | "obd";
+
+export interface ProfileListItem {
+  profile: VehicleProfile;
+  is_builtin: boolean;
+  can_delete: boolean;
+}
+
+export interface LiveDidPin {
+  module_id: string;
+  did: number;
+  label?: string;
+  equation?: string;
+  unit?: string;
+}
+
+export interface DtcInfo {
+  name: string;
+  description: string;
+}
+
+export interface ParsedAsBuilt {
+  vin: string | null;
+  node_ids: number[];
+  blocks_by_addr: Record<string, number[]>;
+}
+
+export interface ObdDashboardSignalKey {
+  source: string;
+  id: string;
+}
+
+export interface ObdDashboard {
+  id: string;
+  name: string;
+  scope: "global" | "profile";
+  profile_id: string | null;
+  signals: ObdDashboardSignalKey[];
+  created_at_unix_ms?: number;
+  updated_at_unix_ms?: number;
+}
+
+export interface CaptureStage {
+  expected_presses: number;
+  start_ms: number;
+  end_ms: number;
+}
+
+export interface FordExtendedPidRow {
+  name: string;
+  short_name: string;
+  mode_and_pid: string;
+  equation: string;
+  unit: string;
+  module_id: string;
+  min?: number;
+  max?: number;
+}
 
 export function hexId(n: number, width = 3): string {
   return `0x${n.toString(16).toUpperCase().padStart(width, "0")}`;
 }
 
-export function downloadJson(filename: string, data: unknown) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], {
-    type: "application/json",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}

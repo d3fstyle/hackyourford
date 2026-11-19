@@ -327,6 +327,101 @@ server.tool(
 );
 
 server.tool(
+  "forddiag_write_as_built",
+  "Write As-Built DID blocks to a module. DESTRUCTIVE — requires confirm=true. Only DIDs marked as_built in the active profile are accepted.",
+  {
+    module_id: z.string().describe("Module id, e.g. BCM"),
+    blocks: z
+      .array(
+        z.object({
+          did: z.number().int().describe("DID, e.g. 0xDE00 = 56832"),
+          data_hex: z
+            .string()
+            .describe("Payload as hex string, e.g. 0102030405060708"),
+        }),
+      )
+      .describe("Blocks to write"),
+    fix_checksums: z
+      .boolean()
+      .optional()
+      .describe("Fix Ford 5-byte group checksums before write"),
+    verify: z
+      .boolean()
+      .optional()
+      .describe("Re-read DIDs after write (default true)"),
+    confirm: z
+      .literal(true)
+      .describe("Must be true to proceed with writing ECU configuration"),
+  },
+  async ({ module_id, blocks, fix_checksums, verify, confirm }) => {
+    try {
+      return ok(
+        await api("POST", "/write_as_built", {
+          module_id,
+          blocks,
+          fix_checksums,
+          verify,
+          confirm,
+        }),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  "forddiag_decode_as_built_params",
+  "Decode named As-Built parameters for a module from the active profile map.",
+  {
+    module_id: z.string().describe("Module id, e.g. BCM"),
+  },
+  async ({ module_id }) => {
+    try {
+      return ok(await api("POST", "/decode_as_built_params", { module_id }));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
+  "forddiag_write_as_built_params",
+  "Apply named parameter edits then write As-Built. DESTRUCTIVE — requires confirm=true.",
+  {
+    module_id: z.string().describe("Module id, e.g. BCM"),
+    edits: z
+      .array(
+        z.object({
+          id: z.string().describe("Param id from profile, e.g. drl_enable"),
+          value: z.number().int().describe("New raw value (0/1 for bool)"),
+        }),
+      )
+      .describe("Parameter edits"),
+    fix_checksums: z.boolean().optional(),
+    verify: z.boolean().optional(),
+    confirm: z
+      .literal(true)
+      .describe("Must be true to proceed with writing ECU configuration"),
+  },
+  async ({ module_id, edits, fix_checksums, verify, confirm }) => {
+    try {
+      return ok(
+        await api("POST", "/write_as_built_params", {
+          module_id,
+          edits,
+          fix_checksums,
+          verify,
+          confirm,
+        }),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.tool(
   "forddiag_start_live",
   "Start live polling of Mode 01 PIDs and UDS DIDs.",
   {

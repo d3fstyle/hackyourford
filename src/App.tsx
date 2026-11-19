@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { save } from "@tauri-apps/plugin-dialog";
-import { DiscoverPanel } from "./features/DiscoverPanel";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Button } from "./components/Button";
 import { DtcPanel } from "./features/DtcPanel";
 import { EcuPanel } from "./features/EcuPanel";
 import { HomePanel } from "./features/HomePanel";
 import { LivePanel } from "./features/LivePanel";
+import { ProfilesPanel } from "./features/Profiles/ProfilesPanel";
+import { ObdPanel } from "./features/Obd/ObdPanel";
 import type {
   AppTab,
+  AsBuiltBlockWrite,
   AsBuiltDump,
+  AsBuiltWriteResult,
   CanFrame,
   ConnectionMode,
   ConnectionStatus,
@@ -17,27 +21,31 @@ import type {
   DidValue,
   DiscoveredEcu,
   EcuDiscoverProgress,
-  LiveSample,
+  LiveDidPin,
   ModuleDtcGroup,
   ModuleScanResult,
+  ParamEdit,
+  ParamValue,
   PatternCandidate,
   SerialPortInfo,
-  VehicleProfile,
+  ProfileListItem,
+  CaptureStage,
 } from "./types";
-import { downloadJson } from "./types";
+import { downloadJson } from "./utils/export";
 
 const TABS: { id: AppTab; label: string; needsConn?: boolean }[] = [
   { id: "home", label: "Home" },
+  { id: "profiles", label: "Profiles" },
   { id: "ecus", label: "ECUs", needsConn: true },
   { id: "dtcs", label: "DTCs", needsConn: true },
   { id: "live", label: "Live", needsConn: true },
-  { id: "discover", label: "Discover", needsConn: true },
+  { id: "obd", label: "OBD", needsConn: true },
 ];
 
 export default function App() {
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [fixtures, setFixtures] = useState<DemoFixtureInfo[]>([]);
-  const [profiles, setProfiles] = useState<VehicleProfile[]>([]);
+  const [profileItems, setProfileItems] = useState<ProfileListItem[]>([]);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("serial");
   const [port, setPort] = useState("");
   const [fixtureId, setFixtureId] = useState("");
@@ -49,17 +57,13 @@ export default function App() {
     useState<EcuDiscoverProgress | null>(null);
   const [dtcGroups, setDtcGroups] = useState<ModuleDtcGroup[]>([]);
   const [asBuilt, setAsBuilt] = useState<AsBuiltDump | null>(null);
+  const [paramValues, setParamValues] = useState<ParamValue[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<AppTab>("home");
 
   const [liveRunning, setLiveRunning] = useState(false);
-  const [liveStream, setLiveStream] = useState<LiveSample[]>([]);
-  const [foundDids, setFoundDids] = useState<LiveSample[]>([]);
-  const [foundPids, setFoundPids] = useState<LiveSample[]>([]);
-  const [pinnedDids, setPinnedDids] = useState<
-    [string, number, string | null][]
-  >([]);
+  const [pinnedDids, setPinnedDids] = useState<LiveDidPin[]>([]);
 
   const [sniffing, setSniffing] = useState(false);
   const [frames, setFrames] = useState<CanFrame[]>([]);
@@ -73,6 +77,8 @@ export default function App() {
 
   const connected = status !== null;
   const isDemo = status?.port.startsWith("demo:") ?? false;
+
+  const profiles = useMemo(() => profileItems.map((i) => i.profile), [profileItems]);
 
   const selectedProfile = useMemo(
     () => profiles.find((p) => p.id === profileId) ?? null,
@@ -93,16 +99,28 @@ export default function App() {
     }
   }, [port]);
 
+  const refreshProfiles = useCallback(async () => {
+    try {
+      const items = await invoke<ProfileListItem[]>("list_profiles");
+      setProfileItems(items);
+      if (items.length > 0 && !profileId) {
+        setProfileId(items[0].profile.id);
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [profileId]);
+
   useEffect(() => {
     void (async () => {
       try {
-        const [plist, profilesList, fixturesList] = await Promise.all([
+        const [plist, items, fixturesList] = await Promise.all([
           invoke<SerialPortInfo[]>("list_ports"),
-          invoke<VehicleProfile[]>("list_profiles"),
+          invoke<ProfileListItem[]>("list_profiles"),
           invoke<DemoFixtureInfo[]>("list_demo_fixtures"),
         ]);
         setPorts(plist);
-        setProfiles(profilesList);
+        setProfileItems(items);
         setFixtures(fixturesList);
         if (plist.length > 0) {
           const preferred =
@@ -111,7 +129,7 @@ export default function App() {
           setPort(preferred.name);
         }
         if (fixturesList.length > 0) setFixtureId(fixturesList[0].id);
-        if (profilesList.length > 0) setProfileId(profilesList[0].id);
+        if (items.length > 0) setProfileId(items[0].profile.id);
       } catch (e) {
         setError(String(e));
       }
@@ -130,29 +148,6 @@ export default function App() {
         await listen<DiscoveredEcu[]>("ecu.done", (e) => {
           setDiscovered(e.payload);
           setDiscoverProgress(null);
-        }),
-      );
-      unsubs.push(
-        await listen<LiveSample>("live.sample", (e) => {
-          setLiveStream((prev) => [...prev.slice(-500), e.payload]);
-        }),
-      );
-      unsubs.push(
-        await listen<LiveSample>("live.did_found", (e) => {
-          setFoundDids((prev) =>
-            prev.some((x) => x.id === e.payload.id)
-              ? prev.map((x) => (x.id === e.payload.id ? e.payload : x))
-              : [...prev, e.payload],
-          );
-        }),
-      );
-      unsubs.push(
-        await listen<LiveSample>("live.pid_found", (e) => {
-          setFoundPids((prev) =>
-            prev.some((x) => x.id === e.payload.id)
-              ? prev.map((x) => (x.id === e.payload.id ? e.payload : x))
-              : [...prev, e.payload],
-          );
         }),
       );
       unsubs.push(
@@ -183,6 +178,12 @@ export default function App() {
       );
       unsubs.push(
         await listen<string>("worker.error", (e) => {
+          setError(String(e.payload));
+        }),
+      );
+      unsubs.push(
+        await listen<string>("connection.lost", (e) => {
+          setStatus(null);
           setError(String(e.payload));
         }),
       );
@@ -249,11 +250,9 @@ export default function App() {
       setDiscovered([]);
       setDtcGroups([]);
       setAsBuilt(null);
+      setParamValues(null);
       setLiveRunning(false);
       setSniffing(false);
-      setLiveStream([]);
-      setFoundDids([]);
-      setFoundPids([]);
       setFrames([]);
       setTab("home");
     });
@@ -268,6 +267,7 @@ export default function App() {
       setModules(results);
       setTab("ecus");
       setAsBuilt(null);
+      setParamValues(null);
       const s = await invoke<ConnectionStatus | null>("connection_status");
       if (s) setStatus(s);
     });
@@ -289,10 +289,78 @@ export default function App() {
     await withBusy("Dumping As-Built…", async () => {
       const dump = await invoke<AsBuiltDump>("dump_as_built", { moduleId });
       setAsBuilt(dump);
+      try {
+        const params = await invoke<ParamValue[]>("decode_as_built_params", {
+          moduleId,
+        });
+        setParamValues(params);
+      } catch {
+        setParamValues([]);
+      }
       downloadJson(
         `${dump.module_id}-asbuilt-${dump.exported_at_unix_ms}.json`,
         dump,
       );
+    });
+  }
+
+  async function handleWriteAsBuilt(
+    moduleId: string,
+    blocks: AsBuiltBlockWrite[],
+  ) {
+    await withBusy("Writing As-Built…", async () => {
+      const result = await invoke<AsBuiltWriteResult>("write_as_built", {
+        moduleId,
+        blocks,
+        fixChecksums: false,
+        verify: true,
+      });
+      if (result.verified && result.verified.length > 0) {
+        setAsBuilt({
+          module_id: result.module_id,
+          module_name: moduleId,
+          profile_id: result.profile_id,
+          blocks: result.verified,
+          exported_at_unix_ms: Date.now(),
+        });
+      } else {
+        const dump = await invoke<AsBuiltDump>("dump_as_built", { moduleId });
+        setAsBuilt(dump);
+      }
+      const params = await invoke<ParamValue[]>("decode_as_built_params", {
+        moduleId,
+      });
+      setParamValues(params);
+    });
+  }
+
+  async function handleWriteAsBuiltParams(
+    moduleId: string,
+    edits: ParamEdit[],
+  ) {
+    await withBusy("Writing parameters…", async () => {
+      const result = await invoke<AsBuiltWriteResult>("write_as_built_params", {
+        moduleId,
+        edits,
+        fixChecksums: false,
+        verify: true,
+      });
+      if (result.verified && result.verified.length > 0) {
+        setAsBuilt({
+          module_id: result.module_id,
+          module_name: moduleId,
+          profile_id: result.profile_id,
+          blocks: result.verified,
+          exported_at_unix_ms: Date.now(),
+        });
+      } else {
+        const dump = await invoke<AsBuiltDump>("dump_as_built", { moduleId });
+        setAsBuilt(dump);
+      }
+      const params = await invoke<ParamValue[]>("decode_as_built_params", {
+        moduleId,
+      });
+      setParamValues(params);
     });
   }
 
@@ -320,40 +388,19 @@ export default function App() {
     });
   }
 
-  async function handleStartLive(
-    pids: number[],
-    dids: [string, number, string | null][],
-  ) {
+  async function handleStartLive(pids: number[], dids: LiveDidPin[]) {
     await withBusy("Starting live…", async () => {
-      setLiveStream([]);
-      setFoundDids([]);
-      setFoundPids([]);
-      const merged = [...dids, ...pinnedDids];
+      const byKey = new Map<string, LiveDidPin>();
+      for (const d of [...dids, ...pinnedDids]) {
+        byKey.set(`${d.module_id}:${d.did}`, d);
+      }
       await invoke("start_live", {
         pids,
-        dids: merged,
+        dids: Array.from(byKey.values()),
         intervalMs: 300,
       });
       setLiveRunning(true);
     });
-  }
-
-  async function handleSaveLive() {
-    try {
-      const path = await save({
-        defaultPath: `forddiag-live-${Date.now()}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (!path) return;
-      await withBusy("Saving…", async () => {
-        await invoke("save_live_session", { path });
-      });
-    } catch (e) {
-      // Fallback: download via browser
-      const samples = await invoke<LiveSample[]>("get_live_samples");
-      downloadJson(`forddiag-live-${Date.now()}.json`, { samples });
-      setError(String(e));
-    }
   }
 
   async function handleStartSniff(bus: "hs" | "ms") {
@@ -363,6 +410,16 @@ export default function App() {
       await invoke("start_sniff", { bus });
       setSniffing(true);
     });
+  }
+
+  async function handleAnalyzeSequence(stages: CaptureStage[]) {
+    return await withBusy("Analyzing sequence…", async () => {
+      const c = await invoke<PatternCandidate[]>("analyze_press_sequence", {
+        stages,
+      });
+      setCandidates(c);
+      return c;
+    }) ?? [];
   }
 
   return (
@@ -396,6 +453,34 @@ export default function App() {
           >
             {connected ? "Connected" : "Disconnected"}
           </span>
+          <Button
+            variant="ghost"
+            aria-label="Quit"
+            className="px-2 leading-none hover:opacity-80"
+            onClick={() => void getCurrentWindow().close()}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 2v10"
+                stroke="#ff6214"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+              />
+              <path
+                d="M6.7 5.6a8 8 0 1 0 10.6 0"
+                stroke="#ff6214"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </Button>
         </div>
       </header>
 
@@ -444,6 +529,15 @@ export default function App() {
             onScan={() => void handleScan()}
           />
         )}
+        {tab === "profiles" && (
+          <ProfilesPanel
+            items={profileItems}
+            selectedProfileId={profileId}
+            busy={busy}
+            onRefresh={() => void refreshProfiles()}
+            onSelect={setProfileId}
+          />
+        )}
         {tab === "ecus" && connected && (
           <EcuPanel
             status={status}
@@ -451,53 +545,19 @@ export default function App() {
             discovered={discovered}
             discoverProgress={discoverProgress}
             busy={busy}
+            profile={selectedProfile}
             onScanProfile={() => void handleScan()}
             onDiscover={(b, f, t) => void handleDiscover(b, f, t)}
             onStop={() => void handleStop()}
             onDumpAsBuilt={(id) => void handleDumpAsBuilt(id)}
+            onWriteAsBuilt={(id, blocks) => void handleWriteAsBuilt(id, blocks)}
+            onWriteAsBuiltParams={(id, edits) =>
+              void handleWriteAsBuiltParams(id, edits)
+            }
             asBuilt={asBuilt}
-          />
-        )}
-        {tab === "dtcs" && connected && (
-          <DtcPanel
-            groups={dtcGroups}
-            busy={busy}
-            onReadAll={() => void handleReadAllDtcs()}
-            onClear={(id) => void handleClearDtcs(id)}
-          />
-        )}
-        {tab === "live" && connected && (
-          <LivePanel
-            running={liveRunning}
-            busy={busy}
-            stream={liveStream}
-            foundDids={foundDids}
-            foundPids={foundPids}
-            profile={selectedProfile}
-            onStart={(pids, dids) => void handleStartLive(pids, dids)}
-            onStop={() => void handleStop()}
-            onSave={() => void handleSaveLive()}
-            onProbePids={() => invoke<number[]>("list_supported_pids")}
-          />
-        )}
-        {tab === "discover" && connected && (
-          <DiscoverPanel
-            profile={selectedProfile}
-            busy={busy}
-            sniffing={sniffing}
-            frames={frames}
-            candidates={candidates}
+            paramValues={paramValues}
             sweptDids={sweptDids}
             didDiffs={didDiffs}
-            onStartSniff={(b) => void handleStartSniff(b)}
-            onStop={() => void handleStop()}
-            onMarkPress={() => void invoke("mark_press")}
-            onAnalyze={() =>
-              void withBusy("Analyzing…", async () => {
-                const c = await invoke<PatternCandidate[]>("analyze_pattern");
-                setCandidates(c);
-              })
-            }
             onDidSweep={(moduleId, from, to) =>
               void withBusy("DID sweep…", async () => {
                 setSweptDids([]);
@@ -527,13 +587,42 @@ export default function App() {
                 setDidDiffs(diffs);
               })
             }
-            onPinDid={(moduleId, did) => {
+            onPinDid={(moduleId, did, label) => {
               setPinnedDids((prev) =>
-                prev.some((p) => p[0] === moduleId && p[1] === did)
+                prev.some((p) => p.module_id === moduleId && p.did === did)
                   ? prev
-                  : [...prev, [moduleId, did, null]],
+                  : [...prev, { module_id: moduleId, did, label }],
               );
             }}
+          />
+        )}
+        {tab === "dtcs" && connected && (
+          <DtcPanel
+            groups={dtcGroups}
+            busy={busy}
+            onReadAll={() => void handleReadAllDtcs()}
+            onClear={(id) => void handleClearDtcs(id)}
+          />
+        )}
+        {tab === "live" && connected && (
+          <LivePanel
+            sniffing={sniffing}
+            frames={frames}
+            candidates={candidates}
+            busy={busy}
+            onStartSniff={(b) => void handleStartSniff(b)}
+            onStop={() => void handleStop()}
+            onAnalyzeSequence={handleAnalyzeSequence}
+          />
+        )}
+        {tab === "obd" && connected && (
+          <ObdPanel
+            running={liveRunning}
+            busy={busy}
+            profile={selectedProfile}
+            pinnedDids={pinnedDids}
+            onStart={(pids, dids) => void handleStartLive(pids, dids)}
+            onStop={() => void handleStop()}
           />
         )}
       </main>

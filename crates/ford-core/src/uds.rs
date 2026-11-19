@@ -9,10 +9,15 @@ pub const SID_DIAGNOSTIC_SESSION_CONTROL: u8 = 0x10;
 pub const SID_CLEAR_DTC: u8 = 0x14;
 pub const SID_READ_DTC: u8 = 0x19;
 pub const SID_READ_DATA_BY_ID: u8 = 0x22;
+pub const SID_SECURITY_ACCESS: u8 = 0x27;
+pub const SID_WRITE_DATA_BY_ID: u8 = 0x2E;
 pub const SID_TESTER_PRESENT: u8 = 0x3E;
 
 pub const SESSION_DEFAULT: u8 = 0x01;
 pub const SESSION_EXTENDED: u8 = 0x03;
+
+/// NRC: securityAccessDenied — write/programming needs SecurityAccess first.
+pub const NRC_SECURITY_ACCESS_DENIED: u8 = 0x33;
 
 /// A diagnostic trouble code with decoded status bits (ISO 14229).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,6 +135,77 @@ impl<'a> UdsClient<'a> {
         }
         Ok(())
     }
+
+    /// WriteDataByIdentifier (0x2E).
+    pub fn write_data_by_identifier(&mut self, did: u16, data: &[u8]) -> Result<()> {
+        let mut payload = Vec::with_capacity(3 + data.len());
+        payload.push(SID_WRITE_DATA_BY_ID);
+        payload.push((did >> 8) as u8);
+        payload.push((did & 0xFF) as u8);
+        payload.extend_from_slice(data);
+        let resp = self.raw_request(&payload)?;
+        if resp.len() < 3 || resp[0] != SID_WRITE_DATA_BY_ID + 0x40 {
+            return Err(Error::Uds(format!("bad WriteDataById response: {resp:02X?}")));
+        }
+        let got_did = u16::from_be_bytes([resp[1], resp[2]]);
+        if got_did != did {
+            return Err(Error::Uds(format!(
+                "DID mismatch on write: expected {did:04X}, got {got_did:04X}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// SecurityAccess requestSeed (odd level, e.g. 0x01).
+    pub fn security_access_request_seed(&mut self, level: u8) -> Result<Vec<u8>> {
+        if level % 2 == 0 {
+            return Err(Error::Uds(format!(
+                "requestSeed level must be odd, got 0x{level:02X}"
+            )));
+        }
+        let resp = self.raw_request(&[SID_SECURITY_ACCESS, level])?;
+        if resp.len() < 2 || resp[0] != SID_SECURITY_ACCESS + 0x40 || resp[1] != level {
+            return Err(Error::Uds(format!(
+                "bad security requestSeed response: {resp:02X?}"
+            )));
+        }
+        Ok(resp[2..].to_vec())
+    }
+
+    /// SecurityAccess sendKey (even level, typically requestSeed level + 1).
+    pub fn security_access_send_key(&mut self, send_level: u8, key: &[u8]) -> Result<()> {
+        if send_level % 2 != 0 {
+            return Err(Error::Uds(format!(
+                "sendKey level must be even, got 0x{send_level:02X}"
+            )));
+        }
+        let mut payload = Vec::with_capacity(2 + key.len());
+        payload.push(SID_SECURITY_ACCESS);
+        payload.push(send_level);
+        payload.extend_from_slice(key);
+        let resp = self.raw_request(&payload)?;
+        if resp.len() < 2 || resp[0] != SID_SECURITY_ACCESS + 0x40 || resp[1] != send_level {
+            return Err(Error::Uds(format!(
+                "bad security sendKey response: {resp:02X?}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Request seed at odd `level`, compute key with `algo`, send key at level+1.
+    pub fn unlock_security(
+        &mut self,
+        level: u8,
+        algo: &dyn crate::security::SecurityKeyAlgo,
+    ) -> Result<()> {
+        let seed = self.security_access_request_seed(level)?;
+        // Already unlocked (seed all zeros is a common ECU convention).
+        if seed.iter().all(|&b| b == 0) {
+            return Ok(());
+        }
+        let key = algo.compute_key(&seed, level)?;
+        self.security_access_send_key(level.wrapping_add(1), &key)
+    }
 }
 
 fn check_negative(response: &[u8], requested_sid: u8) -> Result<()> {
@@ -236,5 +312,27 @@ mod tests {
         let mut client = UdsClient::new(&mut t);
         let dtcs = client.read_dtcs().unwrap();
         assert!(dtcs.is_empty());
+    }
+
+    #[test]
+    fn write_did_via_mock() {
+        let mut t = MockTransport::new();
+        t.expect("2EDE00", "6EDE00");
+        let mut client = UdsClient::new(&mut t);
+        client
+            .write_data_by_identifier(0xDE00, &[0x01, 0x02, 0x03, 0x04])
+            .unwrap();
+    }
+
+    #[test]
+    fn unlock_security_xor() {
+        use crate::security::ExperimentalXorSecurity;
+        let mut t = MockTransport::new();
+        t.expect("2701", "67011234");
+        t.expect("2702", "6702");
+        let mut client = UdsClient::new(&mut t);
+        client
+            .unlock_security(0x01, &ExperimentalXorSecurity)
+            .unwrap();
     }
 }

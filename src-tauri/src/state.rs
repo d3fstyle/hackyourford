@@ -1,7 +1,8 @@
 use crate::worker::{LiveConfig, SnapshotWhich, WorkerCmd, WorkerHandle, WorkerMode};
 use ford_core::{
-    AsBuiltDump, CanBus, ConnectionStatus, DiscoveredEcu, Dtc, ModuleDtcGroup, ModuleScanResult,
-    PatternCandidate, VehicleProfile, DidValue,
+    AsBuiltBlockWrite, AsBuiltDump, AsBuiltWriteResult, CanBus, CaptureStage, ConnectionStatus,
+    DiscoveredEcu, DidValue, Dtc, ModuleDtcGroup, ModuleScanResult, ParamEdit, ParamValue,
+    PatternCandidate, VehicleProfile,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -83,6 +84,45 @@ impl AppState {
         })
     }
 
+    pub fn write_as_built(
+        &self,
+        module_id: &str,
+        blocks: Vec<AsBuiltBlockWrite>,
+        fix_checksums: bool,
+        verify: bool,
+    ) -> Result<AsBuiltWriteResult, String> {
+        self.call(|reply| WorkerCmd::WriteAsBuilt {
+            module_id: module_id.to_string(),
+            blocks,
+            fix_checksums,
+            verify,
+            reply,
+        })
+    }
+
+    pub fn decode_as_built_params(&self, module_id: &str) -> Result<Vec<ParamValue>, String> {
+        self.call(|reply| WorkerCmd::DecodeAsBuiltParams {
+            module_id: module_id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn write_as_built_params(
+        &self,
+        module_id: &str,
+        edits: Vec<ParamEdit>,
+        fix_checksums: bool,
+        verify: bool,
+    ) -> Result<AsBuiltWriteResult, String> {
+        self.call(|reply| WorkerCmd::WriteAsBuiltParams {
+            module_id: module_id.to_string(),
+            edits,
+            fix_checksums,
+            verify,
+            reply,
+        })
+    }
+
     pub fn discover_ecus(
         &self,
         bus: CanBus,
@@ -122,6 +162,14 @@ impl AppState {
 
     pub fn analyze_pattern(&self) -> Result<Vec<PatternCandidate>, String> {
         self.call(|reply| WorkerCmd::AnalyzePattern { reply })
+    }
+
+    pub fn analyze_press_sequence(&self, stages: Vec<CaptureStage>) -> Result<Vec<PatternCandidate>, String> {
+        self.call(|reply| WorkerCmd::AnalyzePressSequence { stages, reply })
+    }
+
+    pub fn get_profile(&self) -> Option<VehicleProfile> {
+        self.call(|reply| WorkerCmd::GetProfile { reply }).ok().flatten()
     }
 
     pub fn start_did_sweep(

@@ -1,3 +1,4 @@
+import { ExportMenu } from "../components/ExportMenu";
 import type {
   ConnectionMode,
   ConnectionStatus,
@@ -5,6 +6,7 @@ import type {
   SerialPortInfo,
   VehicleProfile,
 } from "../types";
+import { copyText, downloadCsv } from "../utils/export";
 
 interface HomePanelProps {
   connectionMode: ConnectionMode;
@@ -98,7 +100,7 @@ export const HomePanel = ({
           </span>
           <div className="flex gap-2">
             <select
-              className="mono flex-1 rounded border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+              className="mono flex-1 rounded border px-3 py-2 text-sm"
               value={port}
               onChange={(e) => setPort(e.target.value)}
               disabled={connected}
@@ -126,7 +128,7 @@ export const HomePanel = ({
             Demo fixture
           </span>
           <select
-            className="rounded border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            className="rounded border px-3 py-2 text-sm"
             value={fixtureId}
             onChange={(e) => setFixtureId(e.target.value)}
             disabled={connected}
@@ -146,7 +148,7 @@ export const HomePanel = ({
           Vehicle profile
         </span>
         <select
-          className="rounded border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+          className="rounded border px-3 py-2 text-sm"
           value={profileId}
           onChange={(e) => setProfileId(e.target.value)}
         >
@@ -197,6 +199,36 @@ export const HomePanel = ({
 
     {status && (
       <div className="grid gap-2 border-t border-[var(--line)] pt-6 text-sm">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-xs uppercase tracking-wider text-[var(--text-muted)]">
+            Status
+          </span>
+          <ExportMenu
+            onCopy={() =>
+              void copyText(
+                [
+                  `VIN: ${status.vin ?? "—"}`,
+                  `Adapter: ${status.adapter.identity}`,
+                  `Voltage: ${status.adapter.voltage ?? "—"}`,
+                  `MS-CAN: ${status.ms_can_capable}`,
+                  `Port: ${status.port}`,
+                  `Profile: ${status.profile_id ?? "—"}`,
+                ].join("\n"),
+              )
+            }
+            onCsv={() =>
+              downloadCsv(`forddiag-home-${Date.now()}.csv`, [
+                ["Field", "Value"],
+                ["VIN", status.vin ?? ""],
+                ["Adapter", status.adapter.identity],
+                ["Voltage", String(status.adapter.voltage ?? "")],
+                ["MS-CAN", String(status.ms_can_capable)],
+                ["Port", status.port],
+                ["Profile", status.profile_id ?? ""],
+              ])
+            }
+          />
+        </div>
         <div className="flex justify-between">
           <span className="text-[var(--text-muted)]">VIN</span>
           <span className="mono">{status.vin ?? "—"}</span>
