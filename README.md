@@ -13,6 +13,10 @@ Primary adapter: **OBDLink MX+** (Bluetooth STN, HS-CAN + MS-CAN). Generic ELM32
 
 > **Not a FORScan clone.** Protocols are implemented from public UDS/ISO-TP/ELM–STN behaviour and community module addresses. No proprietary binaries are used.
 
+## Screenshots
+
+UI walkthrough (Home, Profiles, ECUs, DTCs, Live, OBD): [docs/screenshots.md](docs/screenshots.md).
+
 ## Features (MVP)
 
 - List serial ports and connect to ELM/STN adapters
@@ -56,7 +60,7 @@ crates/ford-core/   # STN transport, ISO-TP, UDS, profiles, scanner
 src-tauri/          # Tauri 2 shell + commands
 src/                # React + Tailwind UI
 profiles/           # Vehicle YAML profiles
-docs/               # Linux adapter setup
+docs/               # Linux adapter setup, screenshots
 ```
 
 ## Safety
