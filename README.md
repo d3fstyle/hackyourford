@@ -70,7 +70,7 @@ Writing to ECUs can brick modules or affect safety systems. This release is **re
 ## Android
 
 Same MVP as a Kotlin + Compose app: sibling repo
-[`../fordscanner_android`](../fordscanner_android) (Bluetooth SPP → OBDLink MX+).
+[`hackyourford_android`](https://github.com/d3fstyle/hackyourford_android) (Bluetooth SPP → OBDLink MX+).
 
 ## License
 
